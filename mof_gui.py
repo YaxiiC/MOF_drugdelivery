@@ -10,11 +10,14 @@ from PyQt5.QtWidgets import (
     QFileDialog,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -174,7 +177,12 @@ class MainWindow(QMainWindow):
         central = QWidget()
         main_layout = QVBoxLayout()
 
-        # File selection row
+        # Input mode tabs
+        self.mode_tabs = QTabWidget()
+        self.mode_tabs.currentChanged.connect(self.update_run_button_state)
+
+        # CIF file tab
+        file_tab = QWidget()
         file_layout = QHBoxLayout()
         self.select_btn = QPushButton("Select CIF File")
         self.select_btn.clicked.connect(self.select_file)
@@ -184,12 +192,43 @@ class MainWindow(QMainWindow):
         self.file_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         file_layout.addWidget(self.file_label, stretch=1)
 
+        file_tab.setLayout(file_layout)
+        self.mode_tabs.addTab(file_tab, "CIF Input")
+
+        # Manual input tab
+        manual_tab = QWidget()
+        manual_layout = QVBoxLayout()
+        manual_row = QHBoxLayout()
+        manual_row.addWidget(QLabel("Metals (comma-separated):"))
+        self.manual_metals_input = QLineEdit()
+        self.manual_metals_input.setPlaceholderText("e.g., Zr, Cu")
+        manual_row.addWidget(self.manual_metals_input, stretch=1)
+        manual_layout.addLayout(manual_row)
+
+        linker_row = QVBoxLayout()
+        linker_row.addWidget(QLabel("Linker SMILES (one per line):"))
+        self.manual_linkers_input = QPlainTextEdit()
+        self.manual_linkers_input.setPlaceholderText("CCO\nO=C(O)C(=O)O")
+        linker_row.addWidget(self.manual_linkers_input)
+        manual_layout.addLayout(linker_row)
+        manual_tab.setLayout(manual_layout)
+        self.mode_tabs.addTab(manual_tab, "Manual Input")
+
+        main_layout.addWidget(self.mode_tabs)
+
+        # Run button row
+        run_layout = QHBoxLayout()
+        run_layout.addStretch()
+
+        self.reset_btn = QPushButton("Reset")
+        self.reset_btn.clicked.connect(self.reset_analysis)
+        run_layout.addWidget(self.reset_btn)
+
         self.run_btn = QPushButton("Run Analysis")
         self.run_btn.setEnabled(False)
         self.run_btn.clicked.connect(self.run_analysis)
-        file_layout.addWidget(self.run_btn)
-
-        main_layout.addLayout(file_layout)
+        run_layout.addWidget(self.run_btn)
+        main_layout.addLayout(run_layout)
 
         # Status labels row
         status_layout = QHBoxLayout()
@@ -203,8 +242,17 @@ class MainWindow(QMainWindow):
 
         # Metal toxicity info row
         self.metal_toxicity_label = QLabel("Metal toxicity info: -")
+        self.metal_toxicity_label.setObjectName("metalSummary")
         self.metal_toxicity_label.setWordWrap(True)
         main_layout.addWidget(self.metal_toxicity_label)
+
+        # Linker toxicity summary row
+        self.linker_summary_label = QLabel(
+            "Linker toxicity summary: Safe 0 | Toxic 0 | Fatal 0"
+        )
+        self.linker_summary_label.setObjectName("linkerSummary")
+        self.linker_summary_label.setWordWrap(True)
+        main_layout.addWidget(self.linker_summary_label)
 
         # Table for predictions
         self.table = QTableWidget()
@@ -280,6 +328,13 @@ class MainWindow(QMainWindow):
                 border: 1px solid {accent_color};
                 border-radius: 6px;
             }}
+            QLabel#metalSummary, QLabel#linkerSummary {{
+                background: #f8c2d3;
+                border: 1px solid {accent_color};
+                border-radius: 8px;
+                padding: 8px 10px;
+                font-weight: bold;
+            }}
             """
         )
 
@@ -288,6 +343,37 @@ class MainWindow(QMainWindow):
         self.log_widget.moveCursor(self.log_widget.textCursor().End)
         self.log_widget.ensureCursorVisible()
 
+    def update_run_button_state(self):
+        if not hasattr(self, "run_btn") or self.run_btn is None:
+            return
+        if self.mode_tabs.currentIndex() == 0:
+            self.run_btn.setEnabled(bool(self.selected_file))
+        else:
+            self.run_btn.setEnabled(True)
+
+    def reset_analysis(self):
+        """Clear current selections, results, and logs to start fresh."""
+        self.append_log("Resetting analysis state...")
+        self.selected_file = None
+        self.file_label.setText("No file selected")
+        self.manual_metals_input.clear()
+        self.manual_linkers_input.clear()
+
+        self.metals_label.setText("Metals detected: -")
+        self.linkers_label.setText("Number of linkers: 0")
+        self.status_label.setText("Status: idle")
+        self.metal_toxicity_label.setText("Metal toxicity info: -")
+        self.linker_summary_label.setText(
+            "Linker toxicity summary: Safe 0 | Toxic 0 | Fatal 0"
+        )
+
+        self.table.clearContents()
+        self.table.setRowCount(0)
+
+        self.log_widget.clear()
+        self.append_log("Ready for new analysis.")
+        self.update_run_button_state()
+
     def select_file(self):
         self.append_log("Opening file dialog for CIF selection...")
         path, _ = QFileDialog.getOpenFileName(
@@ -295,54 +381,80 @@ class MainWindow(QMainWindow):
         )
         if not path:
             self.append_log("File selection cancelled.")
+            self.update_run_button_state()
             return
 
         self.selected_file = path
         self.file_label.setText(path)
-        self.run_btn.setEnabled(True)
         self.append_log(f"Selected CIF: {path}")
+        self.update_run_button_state()
 
     def run_analysis(self):
-        if not self.selected_file or not os.path.isfile(self.selected_file):
+        use_cif_mode = self.mode_tabs.currentIndex() == 0
+        if use_cif_mode and (not self.selected_file or not os.path.isfile(self.selected_file)):
             QMessageBox.warning(self, "No file", "Please select a valid CIF file first.")
             return
 
-        cif_path = self.selected_file
         self.append_log("Starting analysis...")
         self.status_label.setText("Status: running")
 
-        try:
-            self.append_log("Parsing CIF and fragmenting...")
-            metals, smiles_list, status = process_one(cif_path)
-            self.status_label.setText(f"Status: {status}")
-            metals_text = ", ".join(metals) if metals else "none"
-            self.metals_label.setText(f"Metals detected: {metals_text}")
+        if use_cif_mode:
+            cif_path = self.selected_file  # type: ignore[arg-type]
+            try:
+                self.append_log("Parsing CIF and fragmenting...")
+                metals, smiles_list, status = process_one(cif_path)
+                self.status_label.setText(f"Status: {status}")
+                metals_text = ", ".join(metals) if metals else "none"
+                self.metals_label.setText(f"Metals detected: {metals_text}")
+                self.linkers_label.setText(f"Number of linkers: {len(smiles_list)}")
+
+                self.append_log("Fragmentation completed.")
+                self.append_log(f"Found metals: {metals_text}")
+                self.append_log(f"Found {len(smiles_list)} linkers.")
+
+                if status.startswith("error"):
+                    QMessageBox.critical(self, "Fragmentation Error", status)
+                    self.append_log(f"Error during fragmentation: {status}")
+                    return
+
+                if not smiles_list:
+                    QMessageBox.warning(
+                        self,
+                        "No Linkers",
+                        "No linker SMILES were detected in the provided CIF.",
+                    )
+                    self.append_log("No linker SMILES detected; aborting analysis.")
+                    return
+
+            except Exception as e:  # pylint: disable=broad-except
+                err_msg = f"Fragmentation failed: {e}"
+                self.status_label.setText(f"Status: error: {e}")
+                self.append_log(err_msg)
+                QMessageBox.critical(self, "Error", err_msg)
+                return
+        else:
+            self.append_log("Using manual input for metals and linkers.")
+            metals_text = self.manual_metals_input.text()
+            metals = [m.strip() for m in metals_text.split(",") if m.strip()]
+            raw_linkers = self.manual_linkers_input.toPlainText().splitlines()
+            smiles_list = [l.strip() for l in raw_linkers if l.strip()]
+
+            self.status_label.setText("Status: manual input")
+            metals_display = ", ".join(metals) if metals else "none"
+            self.metals_label.setText(f"Metals detected: {metals_display}")
             self.linkers_label.setText(f"Number of linkers: {len(smiles_list)}")
 
-            self.append_log("Fragmentation completed.")
-            self.append_log(f"Found metals: {metals_text}")
-            self.append_log(f"Found {len(smiles_list)} linkers.")
-
-            if status.startswith("error"):
-                QMessageBox.critical(self, "Fragmentation Error", status)
-                self.append_log(f"Error during fragmentation: {status}")
-                return
+            self.append_log(f"Manual metals: {metals_display}")
+            self.append_log(f"Manual linkers count: {len(smiles_list)}")
 
             if not smiles_list:
                 QMessageBox.warning(
                     self,
                     "No Linkers",
-                    "No linker SMILES were detected in the provided CIF.",
+                    "Please enter at least one linker SMILES to run analysis.",
                 )
-                self.append_log("No linker SMILES detected; aborting analysis.")
+                self.append_log("No manual linkers provided; aborting analysis.")
                 return
-
-        except Exception as e:  # pylint: disable=broad-except
-            err_msg = f"Fragmentation failed: {e}"
-            self.status_label.setText(f"Status: error: {e}")
-            self.append_log(err_msg)
-            QMessageBox.critical(self, "Error", err_msg)
-            return
 
         # Load model lazily
         if self.model is None or self.label_map is None:
@@ -363,6 +475,7 @@ class MainWindow(QMainWindow):
         )
         self.append_log("Prediction completed.")
 
+        self.update_linker_summary(results)
         self.populate_table(results)
         self.lookup_metal_toxicity(metals)
         self.append_log("Analysis finished.")
@@ -397,6 +510,29 @@ class MainWindow(QMainWindow):
             self.table.setItem(row_idx, 1, smiles_item)
             self.table.setItem(row_idx, 2, pred_item)
             self.table.setItem(row_idx, 3, prob_item)
+
+    def update_linker_summary(self, results: List[Dict[str, Any]]):
+        safe = toxic = fatal = 0
+        for res in results:
+            if not isinstance(res, dict):
+                continue
+            status = res.get("status", "ok")
+            if status.startswith("failed"):
+                continue
+            label = str(res.get("pred_class_label", "")).strip().lower()
+            if label == "safe":
+                safe += 1
+            elif label == "fatal":
+                fatal += 1
+            elif label == "toxic":
+                toxic += 1
+        summary_text = (
+            f"Linker toxicity summary: Safe {safe} | Toxic {toxic} | Fatal {fatal}"
+        )
+        self.linker_summary_label.setText(summary_text)
+        self.append_log(
+            f"Linker summary -> Safe: {safe}, Toxic: {toxic}, Fatal: {fatal}"
+        )
 
     def lookup_metal_toxicity(self, metals: List[str]):
         if not metals:
