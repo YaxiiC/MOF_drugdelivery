@@ -26,6 +26,26 @@ from model import GINToxModel
 from moffragmentor_break import process_one
 
 
+TOXICITY_TEXT_MAP = {
+    -1: "Safe",
+    0: "Toxic",
+    1: "Fatal",
+    "-1": "Safe",
+    "0": "Toxic",
+    "1": "Fatal",
+}
+
+
+def toxicity_label_from_key(label_key: Any) -> str:
+    try:
+        label_int = int(label_key)
+    except (TypeError, ValueError):
+        label_int = None
+    if label_int is not None and label_int in TOXICITY_TEXT_MAP:
+        return TOXICITY_TEXT_MAP[label_int]
+    return TOXICITY_TEXT_MAP.get(label_key, str(label_key))
+
+
 def load_tox_model(model_path: str, device: torch.device):
     """
     Loads the GINToxModel and associated metadata from best_model.pt.
@@ -65,7 +85,10 @@ def load_tox_model(model_path: str, device: torch.device):
 
     label_map = checkpoint.get("label_map")
     if label_map is None:
-        label_map = {str(i): i for i in range(num_classes)}
+        if num_classes == 3:
+            label_map = {"-1": 0, "0": 1, "1": 2}
+        else:
+            label_map = {str(i): i for i in range(num_classes)}
 
     return model, label_map
 
@@ -98,16 +121,23 @@ def predict_toxicity_for_smiles_list(
 
             with torch.no_grad():
                 logits = model(data.x, data.edge_index, data.edge_attr, data.batch)
-                probs = F.softmax(logits, dim=1).cpu().numpy()[0].tolist()
+                probs_tensor = F.softmax(logits, dim=1)
+                probs = probs_tensor.cpu().numpy()[0].tolist()
                 pred_idx = int(torch.argmax(logits, dim=1).cpu().item())
-                pred_label = str(inv_label_map.get(pred_idx, pred_idx))
+                raw_label = inv_label_map.get(pred_idx, pred_idx)
+                pred_label = toxicity_label_from_key(raw_label)
 
             results.append(
                 {
                     "smiles": smiles,
                     "pred_class_index": pred_idx,
                     "pred_class_label": pred_label,
+                    "raw_label": raw_label,
                     "probabilities": probs,
+                    "probability_labels": [
+                        toxicity_label_from_key(inv_label_map.get(i, i))
+                        for i in range(len(probs))
+                    ],
                     "status": "ok",
                 }
             )
@@ -137,6 +167,7 @@ class MainWindow(QMainWindow):
         self.selected_file: Optional[str] = None
 
         self._build_ui()
+        self._apply_styles()
         self.resize(1000, 700)
 
     def _build_ui(self):
@@ -184,6 +215,7 @@ class MainWindow(QMainWindow):
             "Predicted Toxicity",
             "Class Probabilities",
         ])
+        self.table.setAlternatingRowColors(True)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
@@ -198,6 +230,58 @@ class MainWindow(QMainWindow):
 
         central.setLayout(main_layout)
         self.setCentralWidget(central)
+
+    def _apply_styles(self):
+        palette_color = "#ffe6f0"
+        accent_color = "#d6336c"
+        text_color = "#3a2a2a"
+        self.setStyleSheet(
+            f"""
+            QMainWindow {{
+                background-color: {palette_color};
+                color: {text_color};
+            }}
+            QLabel {{
+                color: {text_color};
+                font-size: 14px;
+            }}
+            QPushButton {{
+                background-color: white;
+                color: {text_color};
+                border: 1px solid {accent_color};
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-weight: bold;
+            }}
+            QPushButton:disabled {{
+                background-color: #f6f6f6;
+                color: #9a9a9a;
+                border: 1px solid #cccccc;
+            }}
+            QPushButton:hover:!disabled {{
+                background-color: {accent_color};
+                color: white;
+            }}
+            QTableWidget {{
+                background: white;
+                alternate-background-color: #fce4ec;
+                gridline-color: {accent_color};
+                selection-background-color: #f8bbd0;
+                selection-color: {text_color};
+            }}
+            QHeaderView::section {{
+                background: {accent_color};
+                color: white;
+                padding: 6px;
+                border: none;
+            }}
+            QTextEdit {{
+                background: white;
+                border: 1px solid {accent_color};
+                border-radius: 6px;
+            }}
+            """
+        )
 
     def append_log(self, msg: str):
         self.log_widget.append(msg)
@@ -300,9 +384,12 @@ class MainWindow(QMainWindow):
             pred_item.setFlags(pred_item.flags() ^ Qt.ItemIsEditable)
 
             probs = res.get("probabilities", [])
-            prob_str = "; ".join(
-                [f"{i}:{p:.3f}" for i, p in enumerate(probs)]
-            ) if probs else ""
+            prob_labels = res.get("probability_labels", [])
+            prob_display_pairs = []
+            for i, p in enumerate(probs):
+                label = prob_labels[i] if i < len(prob_labels) else toxicity_label_from_key(i)
+                prob_display_pairs.append(f"{label}:{p:.3f}")
+            prob_str = "; ".join(prob_display_pairs)
             prob_item = QTableWidgetItem(prob_str)
             prob_item.setFlags(prob_item.flags() ^ Qt.ItemIsEditable)
 
