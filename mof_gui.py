@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -267,10 +268,41 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._apply_styles()
-        self.resize(1000, 700)
+        self.setMinimumSize(1200, 850)
+        self.resize(1400, 900)
 
     def _build_ui(self):
         central = QWidget()
+        wrapper_layout = QVBoxLayout()
+
+        self.stacked = QStackedWidget()
+
+        welcome_page = QWidget()
+        welcome_layout = QVBoxLayout()
+        welcome_layout.setAlignment(Qt.AlignCenter)
+
+        welcome_title = QLabel("MOF for Drug Delivery: Prediction Tool")
+        welcome_title.setAlignment(Qt.AlignCenter)
+        welcome_title.setObjectName("welcomeTitle")
+
+        welcome_subtitle = QLabel(
+            "Pre-experiment screening and property prediction from Jie's Group"
+        )
+        welcome_subtitle.setAlignment(Qt.AlignCenter)
+        welcome_subtitle.setWordWrap(True)
+        welcome_subtitle.setObjectName("welcomeSubtitle")
+
+        self.enter_button = QPushButton("Enter")
+        self.enter_button.setObjectName("enterButton")
+        self.enter_button.clicked.connect(lambda: self.stacked.setCurrentIndex(1))
+        self.enter_button.setFixedWidth(200)
+
+        welcome_layout.addWidget(welcome_title)
+        welcome_layout.addWidget(welcome_subtitle)
+        welcome_layout.addSpacing(20)
+        welcome_layout.addWidget(self.enter_button, alignment=Qt.AlignCenter)
+        welcome_page.setLayout(welcome_layout)
+
         main_layout = QVBoxLayout()
 
         # Input mode tabs
@@ -389,7 +421,15 @@ class MainWindow(QMainWindow):
         self.log_widget.setReadOnly(True)
         main_layout.addWidget(self.log_widget)
 
-        central.setLayout(main_layout)
+        main_page = QWidget()
+        main_page.setLayout(main_layout)
+
+        self.stacked.addWidget(welcome_page)
+        self.stacked.addWidget(main_page)
+        self.stacked.setCurrentIndex(0)
+
+        wrapper_layout.addWidget(self.stacked)
+        central.setLayout(wrapper_layout)
         self.setCentralWidget(central)
 
     def _apply_styles(self):
@@ -456,6 +496,24 @@ class MainWindow(QMainWindow):
                 border-radius: 8px;
                 padding: 8px 10px;
                 font-weight: bold;
+            }}
+            QLabel#welcomeTitle {{
+                font-size: 26px;
+                font-weight: bold;
+            }}
+            QLabel#welcomeSubtitle {{
+                font-size: 16px;
+                padding: 0 30px;
+            }}
+            QPushButton#enterButton {{
+                background-color: #6aa9e6;
+                color: white;
+                padding: 12px 20px;
+                border-radius: 10px;
+                font-size: 16px;
+            }}
+            QPushButton#enterButton:hover {{
+                background-color: #4d8ed1;
             }}
             """
         )
