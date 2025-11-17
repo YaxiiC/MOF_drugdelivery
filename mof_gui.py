@@ -1,6 +1,8 @@
 import os
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 import pandas as pd
 import torch
 import torch.nn.functional as F
@@ -8,6 +10,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
+    QFrame,
     QHeaderView,
     QLabel,
     QLineEdit,
@@ -27,6 +30,12 @@ from PyQt5.QtWidgets import (
 from dataloader import smiles_to_data
 from model import GINToxModel
 from moffragmentor_break import process_one
+from pymatgen.io.cif import CifParser
+
+try:
+    import joblib
+except ImportError:  # pragma: no cover - joblib may not be installed in some environments
+    joblib = None
 
 
 TOXICITY_TEXT_MAP = {
@@ -37,6 +46,90 @@ TOXICITY_TEXT_MAP = {
     "0": "Toxic",
     "1": "Fatal",
 }
+
+
+def structure_to_features(struct) -> np.ndarray:
+    comp = struct.composition
+    num_atoms = struct.num_sites
+    volume = struct.volume
+    density = struct.density
+    elems = list(comp.elements)
+    n_elements = len(elems)
+
+    total = comp.num_atoms
+    if total == 0:
+        return np.zeros(19, dtype=float)
+
+    lat = struct.lattice
+    a, b, c = lat.a, lat.b, lat.c
+    alpha, beta, gamma = lat.alpha, lat.beta, lat.gamma
+
+    sum_Z = sum_Z2 = sum_X = sum_X2 = total_X = sum_mass = 0.0
+    min_Z = float("inf")
+    max_Z = 0.0
+    metal_count = nonmetal_count = 0.0
+
+    for el in elems:
+        amt = float(comp[el])
+        Z = el.Z
+        sum_Z += Z * amt
+        sum_Z2 += (Z ** 2) * amt
+        min_Z = min(min_Z, Z)
+        max_Z = max(max_Z, Z)
+
+        if el.X is not None:
+            sum_X += el.X * amt
+            sum_X2 += (el.X ** 2) * amt
+            total_X += amt
+
+        if el.atomic_mass is not None:
+            sum_mass += float(el.atomic_mass) * amt
+
+        if el.is_metal:
+            metal_count += amt
+        else:
+            nonmetal_count += amt
+
+    avg_Z = sum_Z / total
+    var_Z = (sum_Z2 / total) - avg_Z**2
+    std_Z = max(var_Z, 0.0) ** 0.5
+
+    if total_X > 0:
+        avg_X = sum_X / total_X
+        var_X = (sum_X2 / total_X) - avg_X**2
+        std_X = max(var_X, 0.0) ** 0.5
+    else:
+        avg_X = 0.0
+        std_X = 0.0
+
+    avg_mass = sum_mass / total if total > 0 else 0.0
+    frac_metal = metal_count / total
+    frac_nonmetal = nonmetal_count / total
+
+    return np.array(
+        [
+            num_atoms,
+            volume,
+            density,
+            n_elements,
+            a,
+            b,
+            c,
+            alpha,
+            beta,
+            gamma,
+            avg_Z,
+            std_Z,
+            min_Z,
+            max_Z,
+            avg_X,
+            std_X,
+            avg_mass,
+            frac_metal,
+            frac_nonmetal,
+        ],
+        dtype=float,
+    )
 
 
 def toxicity_label_from_key(label_key: Any) -> str:
@@ -168,6 +261,7 @@ class MainWindow(QMainWindow):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model: Optional[GINToxModel] = None
         self.label_map: Optional[Dict[str, int]] = None
+        self.property_models: Dict[str, Any] = {}
 
         self.selected_file: Optional[str] = None
 
@@ -242,6 +336,23 @@ class MainWindow(QMainWindow):
         status_layout.addWidget(self.status_label)
         main_layout.addLayout(status_layout)
 
+        # CIF-only property predictions
+        self.property_frame = QFrame()
+        self.property_frame.setObjectName("propertyBox")
+        prop_layout = QVBoxLayout()
+        self.property_title = QLabel(
+            "Predicted ASA, Largest Free Sphere, Largest Included Sphere (CIF only)"
+        )
+        self.property_title.setObjectName("propertyTitle")
+        self.property_result_label = QLabel(
+            "ASA: - | Largest Free Sphere: - | Largest Included Sphere: -"
+        )
+        self.property_result_label.setWordWrap(True)
+        prop_layout.addWidget(self.property_title)
+        prop_layout.addWidget(self.property_result_label)
+        self.property_frame.setLayout(prop_layout)
+        main_layout.addWidget(self.property_frame)
+
         # Metal toxicity info row
         self.metal_toxicity_label = QLabel("Metal toxicity info: -")
         self.metal_toxicity_label.setObjectName("metalSummary")
@@ -312,6 +423,15 @@ class MainWindow(QMainWindow):
                 background-color: {accent_color};
                 color: white;
             }}
+            QFrame#propertyBox {{
+                background: #d9ecff;
+                border: 1px solid #6aa9e6;
+                border-radius: 8px;
+                padding: 10px;
+            }}
+            QLabel#propertyTitle {{
+                font-weight: bold;
+            }}
             QTableWidget {{
                 background: white;
                 alternate-background-color: #fce4ec;
@@ -345,13 +465,56 @@ class MainWindow(QMainWindow):
         self.log_widget.moveCursor(self.log_widget.textCursor().End)
         self.log_widget.ensureCursorVisible()
 
+    def load_property_model(self, key: str, folder: str):
+        if key in self.property_models:
+            return self.property_models[key]
+        if joblib is None:
+            raise ImportError(
+                "joblib is required to load the CIF property models. Please install joblib/scikit-learn."
+            )
+        model_path = os.path.join(folder, "model.joblib")
+        self.append_log(f"Loading property model from {model_path}...")
+        model = joblib.load(model_path)
+        self.property_models[key] = model
+        return model
+
+    def predict_cif_properties(self, cif_path: str) -> Dict[str, float]:
+        parser = CifParser(cif_path, occupancy_tolerance=100.0)
+        structures = parser.parse_structures(primitive=False)
+        if not structures:
+            raise ValueError("No structure could be parsed from CIF")
+
+        features = structure_to_features(structures[0]).reshape(1, -1)
+
+        asa_model = self.load_property_model("asa", "rf_mof_ASA_model")
+        lfs_model = self.load_property_model("lfs", "rf_mof_lfs_model")
+        lis_model = self.load_property_model("lis", "rf_mof_lis_model")
+
+        asa_pred = float(asa_model.predict(features)[0])
+        lfs_pred = float(lfs_model.predict(features)[0])
+        lis_pred = float(lis_model.predict(features)[0])
+
+        return {
+            "asa": asa_pred,
+            "lfs": lfs_pred,
+            "lis": lis_pred,
+        }
+
     def update_run_button_state(self):
         if not hasattr(self, "run_btn") or self.run_btn is None:
             return
         if self.mode_tabs.currentIndex() == 0:
             self.run_btn.setEnabled(bool(self.selected_file))
+            self.property_frame.setEnabled(True)
+            self.property_title.setText(
+                "Predicted ASA, Largest Free Sphere, Largest Included Sphere (CIF only)"
+            )
         else:
             self.run_btn.setEnabled(True)
+            self.property_frame.setEnabled(False)
+            self.property_title.setText(
+                "Property prediction available only when a CIF file is provided"
+            )
 
     def reset_analysis(self):
         """Clear current selections, results, and logs to start fresh."""
@@ -374,6 +537,9 @@ class MainWindow(QMainWindow):
 
         self.log_widget.clear()
         self.append_log("Ready for new analysis.")
+        self.property_result_label.setText(
+            "ASA: - | Largest Free Sphere: - | Largest Included Sphere: -"
+        )
         self.update_run_button_state()
 
     def select_file(self):
@@ -428,6 +594,24 @@ class MainWindow(QMainWindow):
                     self.append_log("No linker SMILES detected; aborting analysis.")
                     return
 
+                try:
+                    self.append_log("Running CIF property predictions (ASA/LFS/LIS)...")
+                    prop_result = self.predict_cif_properties(cif_path)
+                    self.update_property_result(prop_result)
+                    self.append_log(
+                        " | ".join(
+                            [
+                                f"ASA: {prop_result['asa']:.3f}",
+                                f"LFS: {prop_result['lfs']:.3f}",
+                                f"LIS: {prop_result['lis']:.3f}",
+                            ]
+                        )
+                    )
+                except Exception as e:  # pylint: disable=broad-except
+                    err_msg = f"Property prediction failed: {e}"
+                    self.append_log(err_msg)
+                    self.update_property_result(None, error=err_msg)
+
             except Exception as e:  # pylint: disable=broad-except
                 err_msg = f"Fragmentation failed: {e}"
                 self.status_label.setText(f"Status: error: {e}")
@@ -448,6 +632,10 @@ class MainWindow(QMainWindow):
 
             self.append_log(f"Manual metals: {metals_display}")
             self.append_log(f"Manual linkers count: {len(smiles_list)}")
+
+            self.update_property_result(
+                None, error="Property prediction disabled for manual input"
+            )
 
             if not smiles_list:
                 QMessageBox.warning(
@@ -585,6 +773,24 @@ class MainWindow(QMainWindow):
 
         info_text = "; ".join(info_parts)
         self.metal_toxicity_label.setText(f"Metal toxicity info: {info_text}")
+
+    def update_property_result(self, result: Optional[Dict[str, float]], error: str = ""):
+        if error:
+            self.property_result_label.setText(error)
+            return
+        if result is None:
+            self.property_result_label.setText(
+                "ASA: - | Largest Free Sphere: - | Largest Included Sphere: -"
+            )
+            return
+
+        asa_val = result.get("asa", float("nan"))
+        lfs_val = result.get("lfs", float("nan"))
+        lis_val = result.get("lis", float("nan"))
+        self.property_result_label.setText(
+            f"ASA: {asa_val:.3f} | Largest Free Sphere: {lfs_val:.3f} | "
+            f"Largest Included Sphere: {lis_val:.3f}"
+        )
 
 
 def main():
