@@ -66,7 +66,9 @@ def load_tox_model(model_path: str, device: torch.device):
         label_map (dict mapping label string -> class index).
     """
 
-    checkpoint = torch.load(model_path, map_location=device)
+    #checkpoint = torch.load(model_path, map_location=device)
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+
     num_node_features = checkpoint.get("num_node_features")
     num_edge_features = checkpoint.get("num_edge_features")
     num_classes = checkpoint.get("num_classes")

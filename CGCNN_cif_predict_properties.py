@@ -1,17 +1,29 @@
+
+
 import os
 import numpy as np
 import pandas as pd
 import deepchem as dc
+from packaging import version
+
+import torch
+print(f"Using torch version: {torch.__version__}")
+
 
 from pymatgen.io.cif import CifParser
 from deepchem.feat import CGCNNFeaturizer
 from deepchem.splits import RandomSplitter
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+import dgl
+
 
 # =========================
 # 1. 数据路径 & 读取 CSV
 # =========================
 properties_df = pd.read_csv(
-    "/Users/chrissychen/Documents/PhD_2nd_year/MOF_MATRIX/zeyi_msc_project/Filtered_Dataset.csv"
+    "C:/Users/chris/MOF_drugdelivery/MOF_drugdelivery/Filtered_Dataset.csv"
 )
 print(f"Total rows in CSV: {len(properties_df)}")
 
@@ -21,7 +33,7 @@ target_column = "Largest Free Sphere"
 target_values = properties_df[target_column].values[:6000]  # shape (N,)
 
 # CIF 文件夹
-cif_directory = "/Users/chrissychen/Documents/PhD_2nd_year/MOF_MATRIX/2022_CSD_MOF_Collection"
+cif_directory = "C:/Users/chris/MOF_drugdelivery/2022_CSD_MOF_Collection"
 
 # =========================
 # 2. 从 CIF 读取结构（pymatgen）

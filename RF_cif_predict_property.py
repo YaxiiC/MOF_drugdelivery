@@ -1,192 +1,316 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
+import math
+import warnings
+
 import numpy as np
 import pandas as pd
+import deepchem as dc
+import torch
 
 from pymatgen.io.cif import CifParser
-from pymatgen.core.periodic_table import Element
-
+from pymatgen.core.structure import Structure
+from deepchem.splits import RandomSplitter
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import KFold
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import train_test_split
 
-# ==========================
-# Custom CIF Featurizer
-# ==========================
-class CustomCIFFeaturizer:
-    def featurize(self, cif_file_path):
-        try:
-            # Parse the structure from CIF file
-            parser = CifParser(cif_file_path, occupancy_tolerance=1.1)
-            structure = parser.get_structures()[0]
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
 
-            # Basic atomic features: positions and lattice parameters
-            atomic_positions = structure.cart_coords.flatten()
-            lattice_params = structure.lattice.parameters
-            
-            # Additional atomic features
-            atomic_masses = np.array([site.specie.atomic_mass for site in structure.sites], dtype=float)
-            electronegativities = np.array([Element(site.specie.symbol).X for site in structure.sites], dtype=float)
-            atomic_numbers = np.array([site.specie.Z for site in structure.sites], dtype=float)
-            
-            # Structure-wide features
-            unit_cell_volume = structure.lattice.volume
-            density = structure.density
-            avg_atomic_mass = np.mean(atomic_masses)
-            total_atomic_number = np.sum(atomic_numbers)
-            
-            # Coordination numbers for each atom
-            coordination_numbers = np.array(
-                [len(structure.get_neighbors(site, 3.0)) for site in structure.sites],
-                dtype=float
-            )
-            total_coordination = np.sum(coordination_numbers)
-            avg_coordination = np.mean(coordination_numbers)
+print(f"Using torch version: {torch.__version__}")
 
-            # Combine all features into one vector
-            feature_vector = np.concatenate([
-                atomic_positions,        # Atomic positions
-                lattice_params,          # Lattice parameters
-                atomic_masses,           # Atomic masses
-                electronegativities,     # Electronegativity
-                atomic_numbers,          # Atomic numbers               # Van der Waals radii
-                [unit_cell_volume],      # Unit cell volume
-                [density],               # Density
-                [avg_atomic_mass],       # Average atomic mass
-                [total_atomic_number],   # Total atomic number
+# =========================
+# 1. 数据路径 & 读取 CSV
+# =========================
+csv_path = "C:/Users/chris/MOF_drugdelivery/MOF_drugdelivery/Filtered_Dataset.csv"
+properties_df = pd.read_csv(csv_path)
+print(f"Total rows in CSV: {len(properties_df)}")
 
-            
-                [total_coordination],    # Total coordination number
-                [avg_coordination],      # Average coordination number
-     
-                [std_bond_length]        # Standard deviation of bond lengths
-            ])
-            
-            return feature_vector
+# 取前 6000 个（你原来的设定）
+mof_files = properties_df["Filename"].values[:6000]
+target_column = "ASA_A^2"
+target_values = properties_df[target_column].values[:6000]  # shape (N,)
 
-        except Exception as e:
-            print(f"Failed to featurize {cif_file_path}: {e}")
-            return None
+# CIF 文件夹
+cif_directory = "C:/Users/chris/MOF_drugdelivery/2022_CSD_MOF_Collection"
 
-# ==========================
-# Data Loading & Featurization
-# ==========================
-print("Script started successfully.")
-
-# Load the properties CSV
-properties_path = '/Users/chrissychen/Documents/PhD_2nd_year/MOF_MATRIX/zeyi_msc_project/Filtered_Dataset.csv'
-properties_df = pd.read_csv(properties_path)
-print(f"Loaded properties from {properties_path}. Shape: {properties_df.shape}")
-
-# Use first 6000 samples (as in your original script)
-mof_files = properties_df['Filename'].values[:6000]
-
-# Target column
-target_column = 'Included Sphere Along Free Sphere Path'
-target_values = properties_df[target_column].values[:6000]
-
-# Directory with CIF files
-cif_directory = '/Users/chrissychen/Documents/PhD_2nd_year/MOF_MATRIX/2022_CSD_MOF_Collection'
-
-# Initialize featurizer
-featurizer = CustomCIFFeaturizer()
-print("Featurizer initialized.")
-
-features = []
+# =========================
+# 2. 从 CIF 读取结构（pymatgen）
+# =========================
+structures = []
 labels = []
-skipped_files = []
+ids = []
+skipped = []
 
-for mof_file, target in zip(mof_files, target_values):
-    cif_path = os.path.join(cif_directory, f"{mof_file}.cif")
-    print(f"Featurizing {cif_path}...")
-    feature = featurizer.featurize(cif_path)
+for cif_id, y in zip(mof_files, target_values):
+    cif_path = os.path.join(cif_directory, f"{cif_id}.cif")
 
-    if feature is not None:
-        features.append(feature)
-        labels.append(target)
+    if not os.path.exists(cif_path):
+        print(f"[WARN] CIF not found, skip: {cif_path}")
+        skipped.append((cif_id, "file_not_found"))
+        continue
+
+    try:
+        parser = CifParser(cif_path, occupancy_tolerance=100.0)
+        # 新 API: parse_structures 代替 get_structures
+        struct_list = parser.parse_structures(primitive=False)
+        if len(struct_list) == 0:
+            print(f"[WARN] No structure parsed, skip: {cif_path}")
+            skipped.append((cif_id, "no_structure"))
+            continue
+
+        struct = struct_list[0]
+        structures.append(struct)
+        labels.append(float(y))
+        ids.append(cif_id)
+
+    except Exception as e:
+        print(f"[ERROR] Failed to parse {cif_path}: {e}")
+        skipped.append((cif_id, str(e)))
+
+print(f"Parsed structures: {len(structures)}")
+print(f"Skipped: {len(skipped)}")
+
+# 可选：保存一下 skip 的信息
+with open("rf_skipped_cifs.log", "w") as f:
+    for cif_id, reason in skipped:
+        f.write(f"{cif_id}\t{reason}\n")
+
+# =========================
+# 3. 结构/组分特征（19 维，不用 DGL/CGCNN）
+# =========================
+# 特征列表：
+# 1.  num_atoms     单胞原子数
+# 2.  volume        体积
+# 3.  density       密度
+# 4.  n_elements    元素种类数
+# 5.  a, b, c       晶格常数
+# 6.  alpha,beta,gamma 晶格角
+# 7.  avg_Z, std_Z, min_Z, max_Z   原子序数统计
+# 8.  avg_X, std_X                 电负性统计
+# 9.  avg_mass                     平均原子质量
+# 10. frac_metal, frac_nonmetal    金属/非金属性原子比例
+
+def structure_to_features(struct: Structure) -> np.ndarray:
+    comp = struct.composition
+    num_atoms = struct.num_sites
+    volume = struct.volume
+    density = struct.density
+    elems = list(comp.elements)
+    n_elements = len(elems)
+
+    total = comp.num_atoms
+    if total == 0:
+        # 避免除零；返回全 0
+        return np.zeros(19, dtype=float)
+
+    # Lattice features
+    lat = struct.lattice
+    a, b, c = lat.a, lat.b, lat.c
+    alpha, beta, gamma = lat.alpha, lat.beta, lat.gamma
+
+    # Z, X, mass stats
+    sum_Z = 0.0
+    sum_Z2 = 0.0
+    sum_X = 0.0
+    sum_X2 = 0.0
+    total_X = 0.0
+    sum_mass = 0.0
+
+    min_Z = float("inf")
+    max_Z = 0.0
+
+    metal_count = 0.0
+    nonmetal_count = 0.0
+
+    for el in elems:
+        amt = float(comp[el])  # number of atoms of this element
+        Z = el.Z
+        sum_Z += Z * amt
+        sum_Z2 += (Z ** 2) * amt
+        min_Z = min(min_Z, Z)
+        max_Z = max(max_Z, Z)
+
+        if el.X is not None:
+            sum_X += el.X * amt
+            sum_X2 += (el.X ** 2) * amt
+            total_X += amt
+
+        if el.atomic_mass is not None:
+            sum_mass += float(el.atomic_mass) * amt
+
+        if el.is_metal:
+            metal_count += amt
+        else:
+            nonmetal_count += amt
+
+    avg_Z = sum_Z / total
+    var_Z = (sum_Z2 / total) - avg_Z ** 2
+    std_Z = max(var_Z, 0.0) ** 0.5
+
+    if total_X > 0:
+        avg_X = sum_X / total_X
+        var_X = (sum_X2 / total_X) - avg_X ** 2
+        std_X = max(var_X, 0.0) ** 0.5
     else:
-        print(f"Failed to featurize {cif_path}. Skipping.")
-        skipped_files.append(cif_path)
+        avg_X = 0.0
+        std_X = 0.0
 
-# ==========================
-# Padding / Truncation of Features
-# ==========================
-print("Standardizing feature vector lengths (padding/truncation)...")
+    avg_mass = sum_mass / total if total > 0 else 0.0
+    frac_metal = metal_count / total
+    frac_nonmetal = nonmetal_count / total
 
-max_length = max(len(f) for f in features)
-padded_features = []
+    return np.array([
+        num_atoms,
+        volume,
+        density,
+        n_elements,
+        a, b, c,
+        alpha, beta, gamma,
+        avg_Z, std_Z, min_Z, max_Z,
+        avg_X, std_X,
+        avg_mass,
+        frac_metal,
+        frac_nonmetal
+    ], dtype=float)
 
-for feature in features:
-    if len(feature) < max_length:
-        feature = np.pad(feature, (0, max_length - len(feature)), 'constant')
-    elif len(feature) > max_length:
-        feature = feature[:max_length]
-    padded_features.append(feature)
+print("Computing handcrafted features...")
+X_feats = np.vstack([structure_to_features(s) for s in structures])
+y = np.array(labels, dtype=np.float32)
 
-features = np.array(padded_features)
-labels = np.array(labels)  # shape (N,)
+print("Feature matrix shape:", X_feats.shape)
+print("Target shape:", y.shape)
 
-print(f"Features shape: {features.shape}")
-print(f"Labels shape: {labels.shape}")
+# =========================
+# 3.5 k-fold 交叉验证（在全部数据上）
+# =========================
+print("\n===== 5-fold Cross Validation (RandomForest on handcrafted features) =====")
 
-# Save features & labels
-np.savez('mof_features_and_labels_random_forest.npz', features=features, labels=labels)
-print("Features and labels saved to mof_features_and_labels_random_forest.npz")
+kfold = KFold(n_splits=5, shuffle=True, random_state=42)
 
-with open('skipped_files_random_forest.log', 'w') as f:
-    for item in skipped_files:
-        f.write("%s\n" % item)
-print(f"Skipped files saved to skipped_files_random_forest.log")
+mae_scores = []
+mse_scores = []
+rmse_scores = []
+r2_scores = []
 
-# ==========================
-# Random Forest Training & Evaluation (5 Seeds)
-# ==========================
+fold_idx = 1
+for train_idx, val_idx in kfold.split(X_feats):
+    X_tr, X_va = X_feats[train_idx], X_feats[val_idx]
+    y_tr, y_va = y[train_idx], y[val_idx]
 
-seeds = [0, 1, 2, 3, 4]
-mae_list = []
-mse_list = []
-rmse_list = []
-r2_list = []
-
-for seed in seeds:
-    print(f"\n=== Random Seed: {seed} ===")
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        features, labels, test_size=0.2, random_state=seed
-    )
-
-    rf = RandomForestRegressor(
-        n_estimators=300,
+    rf_cv = RandomForestRegressor(
+        n_estimators=500,
         max_depth=None,
+        random_state=42 + fold_idx,
         n_jobs=-1,
-        random_state=seed
     )
+    rf_cv.fit(X_tr, y_tr)
+    y_pred = rf_cv.predict(X_va)
 
-    rf.fit(X_train, y_train)
-    y_pred = rf.predict(X_test)
+    mae = mean_absolute_error(y_va, y_pred)
+    mse = mean_squared_error(y_va, y_pred)
+    rmse = math.sqrt(mse)
+    r2 = r2_score(y_va, y_pred)
 
-    mae = mean_absolute_error(y_test, y_pred)
-    mse = mean_squared_error(y_test, y_pred)
-    rmse = np.sqrt(mse)
-    r2 = r2_score(y_test, y_pred)
+    mae_scores.append(mae)
+    mse_scores.append(mse)
+    rmse_scores.append(rmse)
+    r2_scores.append(r2)
 
-    mae_list.append(mae)
-    mse_list.append(mse)
-    rmse_list.append(rmse)
-    r2_list.append(r2)
+    print(f"[Fold {fold_idx}] MAE={mae:.4f}, MSE={mse:.4f}, RMSE={rmse:.4f}, R2={r2:.4f}")
+    fold_idx += 1
 
-    print(f"Seed {seed} - MAE  = {mae:.4f}")
-    print(f"Seed {seed} - MSE  = {mse:.4f}")
-    print(f"Seed {seed} - RMSE = {rmse:.4f}")
-    print(f"Seed {seed} - R²   = {r2:.4f}")
+def mean_std(arr):
+    return float(np.mean(arr)), float(np.std(arr))
 
-# ==========================
-# Print Mean ± Std over 5 runs
-# ==========================
-def mean_std_str(values):
-    return f"{np.mean(values):.4f} ± {np.std(values):.4f}"
+mae_mean, mae_std = mean_std(mae_scores)
+mse_mean, mse_std = mean_std(mse_scores)
+rmse_mean, rmse_std = mean_std(rmse_scores)
+r2_mean, r2_std = mean_std(r2_scores)
 
-print("\n================ Overall Performance (5 random seeds) ================")
-print(f"MAE  : {mean_std_str(mae_list)}")
-print(f"MSE  : {mean_std_str(mse_list)}")
-print(f"RMSE : {mean_std_str(rmse_list)}")
-print(f"R²   : {mean_std_str(r2_list)}")
+print("\n[CV 5-fold] Metrics (mean ± std)")
+print(f"MAE  = {mae_mean:.4f} ± {mae_std:.4f}")
+print(f"MSE  = {mse_mean:.4f} ± {mse_std:.4f}")
+print(f"RMSE = {rmse_mean:.4f} ± {rmse_std:.4f}")
+print(f"R^2  = {r2_mean:.4f} ± {r2_std:.4f}")
+
+# =========================
+# 4. 构建 DeepChem Dataset 并划分（train/valid/test）
+# =========================
+dataset = dc.data.NumpyDataset(X=X_feats, y=y, ids=np.array(ids))
+print("\nDataset size:", len(dataset))
+
+splitter = RandomSplitter()
+train_dataset, valid_dataset, test_dataset = splitter.train_valid_test_split(
+    dataset, frac_train=0.8, frac_valid=0.1, frac_test=0.1
+)
+
+print(f"Train: {len(train_dataset)}, Valid: {len(valid_dataset)}, Test: {len(test_dataset)}")
+
+# =========================
+# 5. 定义非 DGL 模型：RandomForest 回归（DeepChem 包装）
+# =========================
+rf = RandomForestRegressor(
+    n_estimators=500,
+    max_depth=None,
+    random_state=42,
+    n_jobs=-1,
+)
+
+model = dc.models.SklearnModel(
+    rf,
+    model_dir="rf_mof_ASA_model",
+    mode="regression"
+)
+
+# =========================
+# 6. 训练 & 验证
+# =========================
+metric_mae = dc.metrics.Metric(dc.metrics.mean_absolute_error)
+metric_mse = dc.metrics.Metric(dc.metrics.mean_squared_error)
+metric_r2 = dc.metrics.Metric(dc.metrics.r2_score)
+
+print("\nFitting RandomForest model on train set...")
+model.fit(train_dataset)
+
+print("\nEvaluating on train/valid sets (DeepChem)...")
+train_scores = model.evaluate(train_dataset, [metric_mae, metric_mse, metric_r2])
+valid_scores = model.evaluate(valid_dataset, [metric_mae, metric_mse, metric_r2])
+
+mae_tr = train_scores["mean_absolute_error"]
+mse_tr = train_scores["mean_squared_error"]
+rmse_tr = math.sqrt(mse_tr)
+r2_tr = train_scores["r2_score"]
+
+mae_va = valid_scores["mean_absolute_error"]
+mse_va = valid_scores["mean_squared_error"]
+rmse_va = math.sqrt(mse_va)
+r2_va = valid_scores["r2_score"]
+
+print(f"[Train] MAE={mae_tr:.4f}, MSE={mse_tr:.4f}, RMSE={rmse_tr:.4f}, R2={r2_tr:.4f}")
+print(f"[Valid] MAE={mae_va:.4f}, MSE={mse_va:.4f}, RMSE={rmse_va:.4f}, R2={r2_va:.4f}")
+
+# =========================
+# 7. 测试集评估
+# =========================
+print("\nEvaluating on test set (DeepChem)...")
+test_scores = model.evaluate(test_dataset, [metric_mae, metric_mse, metric_r2])
+mae_te = test_scores["mean_absolute_error"]
+mse_te = test_scores["mean_squared_error"]
+rmse_te = math.sqrt(mse_te)
+r2_te = test_scores["r2_score"]
+
+print("\n===== Final Test Performance (ASA, RandomForest) =====")
+print(f"MAE  = {mae_te:.4f}")
+print(f"MSE  = {mse_te:.4f}")
+print(f"RMSE = {rmse_te:.4f}")
+print(f"R^2  = {r2_te:.4f}")
+
+# =========================
+# 8. 保存模型（修正：SklearnModel 用 save() 而不是 save_checkpoint）
+# =========================
+model.save()
+print("RandomForest model saved in folder: rf_mof_ASA_model")
