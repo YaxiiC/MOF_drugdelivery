@@ -7,6 +7,7 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -258,6 +259,10 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MOF Linker Toxicity Predictor")
+        self.app_dir = os.path.dirname(os.path.abspath(__file__))
+        icon_path = os.path.join(self.app_dir, "icon.jpg")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model: Optional[GINToxModel] = None
@@ -280,27 +285,53 @@ class MainWindow(QMainWindow):
         welcome_page = QWidget()
         welcome_layout = QVBoxLayout()
         welcome_layout.setAlignment(Qt.AlignCenter)
+        welcome_layout.setContentsMargins(40, 60, 40, 60)
+
+        welcome_card = QFrame()
+        welcome_card.setObjectName("welcomeCard")
+        welcome_card.setMaximumWidth(760)
+        card_layout = QVBoxLayout()
+        card_layout.setSpacing(16)
+        card_layout.setAlignment(Qt.AlignCenter)
+
+        logo_label = QLabel()
+        icon_path = os.path.join(self.app_dir, "icon.jpg")
+        if os.path.exists(icon_path):
+            logo = QPixmap(icon_path).scaled(120, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            logo_label.setPixmap(logo)
+            logo_label.setAlignment(Qt.AlignCenter)
 
         welcome_title = QLabel("MOF for Drug Delivery: Prediction Tool")
         welcome_title.setAlignment(Qt.AlignCenter)
         welcome_title.setObjectName("welcomeTitle")
 
         welcome_subtitle = QLabel(
-            "Pre-experiment screening and property prediction from Jie's Group"
+            "Comprehensive screening and property prediction for safer, faster MOF-driven drug delivery research."
         )
         welcome_subtitle.setAlignment(Qt.AlignCenter)
         welcome_subtitle.setWordWrap(True)
         welcome_subtitle.setObjectName("welcomeSubtitle")
+
+        support_label = QLabel("This research is supported by Oral and Dental Trust.")
+        support_label.setAlignment(Qt.AlignCenter)
+        support_label.setWordWrap(True)
+        support_label.setObjectName("supportLabel")
 
         self.enter_button = QPushButton("Enter")
         self.enter_button.setObjectName("enterButton")
         self.enter_button.clicked.connect(lambda: self.stacked.setCurrentIndex(1))
         self.enter_button.setFixedWidth(200)
 
-        welcome_layout.addWidget(welcome_title)
-        welcome_layout.addWidget(welcome_subtitle)
-        welcome_layout.addSpacing(20)
-        welcome_layout.addWidget(self.enter_button, alignment=Qt.AlignCenter)
+        if logo_label.pixmap() is not None:
+            card_layout.addWidget(logo_label)
+        card_layout.addWidget(welcome_title)
+        card_layout.addWidget(welcome_subtitle)
+        card_layout.addWidget(support_label)
+        card_layout.addSpacing(10)
+        card_layout.addWidget(self.enter_button, alignment=Qt.AlignCenter)
+
+        welcome_card.setLayout(card_layout)
+        welcome_layout.addWidget(welcome_card, alignment=Qt.AlignCenter)
         welcome_page.setLayout(welcome_layout)
 
         main_layout = QVBoxLayout()
@@ -504,6 +535,17 @@ class MainWindow(QMainWindow):
             QLabel#welcomeSubtitle {{
                 font-size: 16px;
                 padding: 0 30px;
+            }}
+            QLabel#supportLabel {{
+                font-size: 14px;
+                color: #333333;
+            }}
+            QFrame#welcomeCard {{
+                background: white;
+                border-radius: 12px;
+                border: 1px solid #d0d7de;
+                padding: 24px 28px;
+                box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
             }}
             QPushButton#enterButton {{
                 background-color: #6aa9e6;
