@@ -306,13 +306,13 @@ class MainWindow(QMainWindow):
         welcome_title.setObjectName("welcomeTitle")
 
         welcome_subtitle = QLabel(
-            "Comprehensive screening and property prediction for safer, faster MOF-driven drug delivery research."
+            "Comprehensive screening and property prediction for safer, faster MOF drug delivery research."
         )
         welcome_subtitle.setAlignment(Qt.AlignCenter)
         welcome_subtitle.setWordWrap(True)
         welcome_subtitle.setObjectName("welcomeSubtitle")
 
-        support_label = QLabel("This research is supported by Oral and Dental Trust.")
+        support_label = QLabel("This research is supported by Oral and Dental Reaerch Trust.")
         support_label.setAlignment(Qt.AlignCenter)
         support_label.setWordWrap(True)
         support_label.setObjectName("supportLabel")
