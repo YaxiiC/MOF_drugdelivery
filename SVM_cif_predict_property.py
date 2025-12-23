@@ -32,7 +32,7 @@ print(f"Total rows in CSV: {len(properties_df)}")
 
 # 取前 6000 个（你原来的设定）
 mof_files = properties_df["Filename"].values[:6000]
-target_column = "ASA_A^2"
+target_column = "Included Sphere Along Free Sphere Path"
 target_values = properties_df[target_column].values[:6000]  # shape (N,)
 
 # CIF 文件夹
@@ -212,7 +212,6 @@ for train_idx, val_idx in kfold.split(X_feats):
         C=100.0,
         gamma='scale',
         epsilon=0.1,
-        random_state=42 + fold_idx,
     )
     svr_cv.fit(X_tr_scaled, y_tr)
     y_pred = svr_cv.predict(X_va_scaled)
@@ -269,7 +268,6 @@ svr = SVR(
     C=100.0,
     gamma='scale',
     epsilon=0.1,
-    random_state=42,
 )
 
 # Create pipeline with scaler and SVR
@@ -280,7 +278,7 @@ svr_pipeline = Pipeline([
 
 model = dc.models.SklearnModel(
     svr_pipeline,
-    model_dir="svm_mof_ASA_model",
+    model_dir="svm_mof_ISAFP_model",
     mode="regression"
 )
 
@@ -321,7 +319,7 @@ mse_te = test_scores["mean_squared_error"]
 rmse_te = math.sqrt(mse_te)
 r2_te = test_scores["r2_score"]
 
-print("\n===== Final Test Performance (ASA, SVR) =====")
+print("\n===== Final Test Performance (ISAFP, SVR) =====")
 print(f"MAE  = {mae_te:.4f}")
 print(f"MSE  = {mse_te:.4f}")
 print(f"RMSE = {rmse_te:.4f}")
@@ -331,5 +329,5 @@ print(f"R^2  = {r2_te:.4f}")
 # 8. 保存模型（修正：SklearnModel 用 save() 而不是 save_checkpoint）
 # =========================
 model.save()
-print("SVR model saved in folder: svm_mof_ASA_model")
+print("SVR model saved in folder: svm_mof_ISAFP_model")
 

@@ -31,7 +31,7 @@ print(f"Total rows in CSV: {len(properties_df)}")
 
 # 取前 6000 个（你原来的设定）
 mof_files = properties_df["Filename"].values[:6000]
-target_column = "ASA_A^2"
+target_column = "Included Sphere Along Free Sphere Path"
 target_values = properties_df[target_column].values[:6000]  # shape (N,)
 
 # CIF 文件夹
@@ -262,7 +262,7 @@ rf = RandomForestRegressor(
 
 model = dc.models.SklearnModel(
     rf,
-    model_dir="rf_mof_ASA_model",
+    model_dir="rf_mof_ISAFP_model",
     mode="regression"
 )
 
@@ -303,7 +303,7 @@ mse_te = test_scores["mean_squared_error"]
 rmse_te = math.sqrt(mse_te)
 r2_te = test_scores["r2_score"]
 
-print("\n===== Final Test Performance (ASA, RandomForest) =====")
+print("\n===== Final Test Performance (ISAFP, RandomForest) =====")
 print(f"MAE  = {mae_te:.4f}")
 print(f"MSE  = {mse_te:.4f}")
 print(f"RMSE = {rmse_te:.4f}")
@@ -313,4 +313,4 @@ print(f"R^2  = {r2_te:.4f}")
 # 8. 保存模型（修正：SklearnModel 用 save() 而不是 save_checkpoint）
 # =========================
 model.save()
-print("RandomForest model saved in folder: rf_mof_ASA_model")
+print("RandomForest model saved in folder: rf_mof_ISAFP_model")
