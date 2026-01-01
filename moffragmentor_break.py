@@ -154,10 +154,10 @@ def metals_from_structure(struct) -> List[str]:
 
 def split_linker_components_with_metal_contacts(struct, sgraph):
     """
-    和之前相比：
-    - 仍然是删掉所有金属，只在非金属子图上做连通分量；
-    - 但额外记录每个 component 是否有至少一个原子与金属相连。
-    返回列表：[(component_indices, has_metal_contact), ...]
+    Compared to the previous approach:
+    - Still remove all metals and find connected components on the non-metal subgraph.
+    - Additionally record whether each component has at least one atom connected to a metal.
+    Returns a list: [(component_indices, has_metal_contact), ...]
     """
     import networkx as nx
     G = sgraph.graph.to_undirected()
@@ -190,9 +190,9 @@ def split_linker_components_with_metal_contacts(struct, sgraph):
 def process_one(path: str) -> Tuple[List[str], List[str], str]:
     """
     new logic:
-    - 用 split_linker_components_with_metal_contacts 拿到每个 component 以及是否接触金属；
-    - 只对 has_metal_contact=True 的 component 转成 SMILES；
-    - 再用 is_big_enough 过滤掉重原子太少的（比如水/NO3-/small solvent）。
+    - Use split_linker_components_with_metal_contacts to get each component and whether it touches metals.
+    - Convert only components with has_metal_contact=True to SMILES.
+    - Filter out components with too few heavy atoms using is_big_enough (e.g., water/NO3-/small solvent).
     """
     try:
         struct = read_structure_clean(path)
