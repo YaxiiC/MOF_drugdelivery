@@ -23,22 +23,22 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 print(f"Using torch version: {torch.__version__}")
 
 # =========================
-# 1. 数据路径 & 读取 CSV
+# 1. Data paths & CSV loading
 # =========================
 csv_path = "C:/Users/chris/MOF_drugdelivery/MOF_drugdelivery/Filtered_Dataset.csv"
 properties_df = pd.read_csv(csv_path)
 print(f"Total rows in CSV: {len(properties_df)}")
 
-# 取前 6000 个（你原来的设定）
+# Use the first 6000 entries (original setting)
 mof_files = properties_df["Filename"].values[:6000]
 target_column = "Included Sphere Along Free Sphere Path"
 target_values = properties_df[target_column].values[:6000]  # shape (N,)
 
-# CIF 文件夹
+# CIF directory
 cif_directory = "C:/Users/chris/MOF_drugdelivery/2022_CSD_MOF_Collection"
 
 # =========================
-# 2. 从 CIF 读取结构（pymatgen）
+# 2. Read structures from CIF files (pymatgen)
 # =========================
 structures = []
 labels = []
@@ -55,7 +55,7 @@ for cif_id, y in zip(mof_files, target_values):
 
     try:
         parser = CifParser(cif_path, occupancy_tolerance=100.0)
-        # 新 API: parse_structures 代替 get_structures
+        # New API: use parse_structures instead of get_structures
         struct_list = parser.parse_structures(primitive=False)
         if len(struct_list) == 0:
             print(f"[WARN] No structure parsed, skip: {cif_path}")
@@ -74,25 +74,25 @@ for cif_id, y in zip(mof_files, target_values):
 print(f"Parsed structures: {len(structures)}")
 print(f"Skipped: {len(skipped)}")
 
-# 可选：保存一下 skip 的信息
+# Optional: save skip information
 with open("rf_skipped_cifs.log", "w") as f:
     for cif_id, reason in skipped:
         f.write(f"{cif_id}\t{reason}\n")
 
 # =========================
-# 3. 结构/组分特征（19 维，不用 DGL/CGCNN）
+# 3. Structural/compositional features (19D, no DGL/CGCNN)
 # =========================
-# 特征列表：
-# 1.  num_atoms     单胞原子数
-# 2.  volume        体积
-# 3.  density       密度
-# 4.  n_elements    元素种类数
-# 5.  a, b, c       晶格常数
-# 6.  alpha,beta,gamma 晶格角
-# 7.  avg_Z, std_Z, min_Z, max_Z   原子序数统计
-# 8.  avg_X, std_X                 电负性统计
-# 9.  avg_mass                     平均原子质量
-# 10. frac_metal, frac_nonmetal    金属/非金属性原子比例
+# Feature list:
+# 1.  num_atoms                  number of atoms in the unit cell
+# 2.  volume                     unit cell volume
+# 3.  density                    density
+# 4.  n_elements                 number of element types
+# 5.  a, b, c                    lattice constants
+# 6.  alpha, beta, gamma         lattice angles
+# 7.  avg_Z, std_Z, min_Z, max_Z atomic number statistics
+# 8.  avg_X, std_X               electronegativity statistics
+# 9.  avg_mass                   average atomic mass
+# 10. frac_metal, frac_nonmetal  fraction of metal and nonmetal atoms
 
 def structure_to_features(struct: Structure) -> np.ndarray:
     comp = struct.composition
@@ -104,7 +104,7 @@ def structure_to_features(struct: Structure) -> np.ndarray:
 
     total = comp.num_atoms
     if total == 0:
-        # 避免除零；返回全 0
+        # Avoid divide-by-zero; return zeros
         return np.zeros(19, dtype=float)
 
     # Lattice features
@@ -185,7 +185,7 @@ print("Feature matrix shape:", X_feats.shape)
 print("Target shape:", y.shape)
 
 # =========================
-# 3.5 k-fold 交叉验证（在全部数据上）
+# 3.5 k-fold cross-validation (on all data)
 # =========================
 print("\n===== 5-fold Cross Validation (RandomForest on handcrafted features) =====")
 
@@ -238,7 +238,7 @@ print(f"RMSE = {rmse_mean:.4f} ± {rmse_std:.4f}")
 print(f"R^2  = {r2_mean:.4f} ± {r2_std:.4f}")
 
 # =========================
-# 4. 构建 DeepChem Dataset 并划分（train/valid/test）
+# 4. Build DeepChem Dataset and split (train/valid/test)
 # =========================
 dataset = dc.data.NumpyDataset(X=X_feats, y=y, ids=np.array(ids))
 print("\nDataset size:", len(dataset))
@@ -251,7 +251,7 @@ train_dataset, valid_dataset, test_dataset = splitter.train_valid_test_split(
 print(f"Train: {len(train_dataset)}, Valid: {len(valid_dataset)}, Test: {len(test_dataset)}")
 
 # =========================
-# 5. 定义非 DGL 模型：RandomForest 回归（DeepChem 包装）
+# 5. Define non-DGL model: RandomForest regression (DeepChem wrapper)
 # =========================
 rf = RandomForestRegressor(
     n_estimators=500,
@@ -267,7 +267,7 @@ model = dc.models.SklearnModel(
 )
 
 # =========================
-# 6. 训练 & 验证
+# 6. Train & validate
 # =========================
 metric_mae = dc.metrics.Metric(dc.metrics.mean_absolute_error)
 metric_mse = dc.metrics.Metric(dc.metrics.mean_squared_error)
@@ -294,7 +294,7 @@ print(f"[Train] MAE={mae_tr:.4f}, MSE={mse_tr:.4f}, RMSE={rmse_tr:.4f}, R2={r2_t
 print(f"[Valid] MAE={mae_va:.4f}, MSE={mse_va:.4f}, RMSE={rmse_va:.4f}, R2={r2_va:.4f}")
 
 # =========================
-# 7. 测试集评估
+# 7. Test evaluation
 # =========================
 print("\nEvaluating on test set (DeepChem)...")
 test_scores = model.evaluate(test_dataset, [metric_mae, metric_mse, metric_r2])
@@ -310,7 +310,7 @@ print(f"RMSE = {rmse_te:.4f}")
 print(f"R^2  = {r2_te:.4f}")
 
 # =========================
-# 8. 保存模型（修正：SklearnModel 用 save() 而不是 save_checkpoint）
+# 8. Save model (SklearnModel uses save(), not save_checkpoint)
 # =========================
 model.save()
 print("RandomForest model saved in folder: rf_mof_ISAFP_model")

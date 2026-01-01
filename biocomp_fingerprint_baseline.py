@@ -1,8 +1,8 @@
 # fingerprint_baseline.py
 """
-Baseline: 分子指纹 + Random Forest / SVM
-从 CSV 读取 SMILES 和标签，生成 Morgan 指纹，训练并评估模型。
-支持多次随机划分（不同 seed），输出 mean ± std。
+Baseline: molecular fingerprints + Random Forest / SVM
+Load SMILES and labels from CSV, generate Morgan fingerprints, train, and evaluate models.
+Supports multiple random splits (different seeds) and reports mean ± std.
 """
 
 import argparse
@@ -24,15 +24,15 @@ from sklearn.metrics import (
     classification_report,
 )
 
-RDLogger.DisableLog("rdApp.*")  # 关掉 RDKit 的 log
+RDLogger.DisableLog("rdApp.*")  # Silence RDKit logs
 
 
 # ======================
-# 数据加载 & 指纹构建
+# Data loading & fingerprint construction
 # ======================
 
 def load_csv(csv_path: str) -> pd.DataFrame:
-    """稳一点的 CSV 读取函数：先逗号，再试 tab 分隔。"""
+    """Robust CSV reader: try comma first, then tab-separated."""
     try:
         df = pd.read_csv(csv_path)
     except Exception:
@@ -41,10 +41,10 @@ def load_csv(csv_path: str) -> pd.DataFrame:
 
 
 def smiles_to_morgan_fp(smiles: str, radius: int = 2, n_bits: int = 2048) -> np.ndarray:
-    """SMILES -> Morgan 指纹 (bit 向量)."""
+    """SMILES -> Morgan fingerprint (bit vector)."""
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
-        raise ValueError(f"RDKit 无法解析 SMILES: {smiles}")
+        raise ValueError(f"RDKit cannot parse SMILES: {smiles}")
     fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius, nBits=n_bits)
     arr = np.zeros((n_bits,), dtype=np.int8)
     Chem.DataStructs.ConvertToNumpyArray(fp, arr)
@@ -59,22 +59,22 @@ def create_fingerprint_dataset(
     n_bits: int = 2048,
 ):
     """
-    从 CSV 构建:
-        X: Morgan 指纹 (N, n_bits)
-        y: 标签 (N,) ，已经映射到 [0..C-1]
-        label_map: 原始标签 -> 索引
+    Build from CSV:
+        X: Morgan fingerprints (N, n_bits)
+        y: labels (N,), already mapped to [0..C-1]
+        label_map: original label -> index
     """
-    print(f"\n📄 读取 CSV: {csv_path}")
+    print(f"\n📄 Reading CSV: {csv_path}")
     df = load_csv(csv_path)
-    print(f"➡️ 原始行数: {len(df)}")
+    print(f"➡️ Raw rows: {len(df)}")
 
     df = df.dropna(subset=[smiles_column, label_column])
-    print(f"➡️ 去掉 NaN 后: {len(df)}")
+    print(f"➡️ After dropping NaN: {len(df)}")
 
     original_labels = df[label_column].values
     unique_labels = sorted(set(original_labels))
     label_map = {orig: idx for idx, orig in enumerate(unique_labels)}
-    print(f"➡️ 标签映射 (原始 -> 索引): {label_map}")
+    print(f"➡️ Label mapping (original -> index): {label_map}")
 
     fps = []
     mapped_labels = []
@@ -86,7 +86,7 @@ def create_fingerprint_dataset(
         try:
             fp = smiles_to_morgan_fp(smiles, radius=radius, n_bits=n_bits)
         except Exception as e:
-            print(f"⚠️ 跳过第 {idx} 行, SMILES={smiles}, 错误: {e}")
+            print(f"⚠️ Skip row {idx}, SMILES={smiles}, error: {e}")
             continue
 
         fps.append(fp)
@@ -95,9 +95,9 @@ def create_fingerprint_dataset(
     X = np.vstack(fps).astype(np.float32)
     y = np.array(mapped_labels, dtype=np.int64)
 
-    print(f"\n✅ 指纹样本数: {X.shape[0]}")
-    print(f"🧬 指纹维度: {X.shape[1]}")
-    print(f"🏷️ 类别数: {len(unique_labels)}")
+    print(f"\n✅ Fingerprint samples: {X.shape[0]}")
+    print(f"🧬 Fingerprint dimension: {X.shape[1]}")
+    print(f"🏷️ Number of classes: {len(unique_labels)}")
 
     return X, y, label_map
 
@@ -110,13 +110,13 @@ def stratified_split(
     seed: int = 42,
 ):
     """
-    与 GNN 同风格：分三块 train / val / test，且分层抽样。
+    Match the GNN split style: stratified train/val/test split.
     """
-    print("\n📊 划分数据集 (stratified train/val/test)...")
+    print("\n📊 Splitting dataset (stratified train/val/test)...")
 
     indices = np.arange(len(y))
 
-    # 先 train+val vs test
+    # First split train+val vs test
     idx_trainval, idx_test, y_trainval, y_test = train_test_split(
         indices,
         y,
@@ -125,7 +125,7 @@ def stratified_split(
         stratify=y,
     )
 
-    # 再从 train+val 里面划出 val
+    # Then split val from train+val
     val_ratio_adjusted = val_ratio / (1.0 - test_ratio)
     idx_train, idx_val, y_train, y_val = train_test_split(
         idx_trainval,
@@ -149,7 +149,7 @@ def stratified_split(
 
 
 # ======================
-# 统计/打印指标相关函数
+# Metric helpers
 # ======================
 
 def compute_per_class_metrics(y_true, y_pred, y_prob, num_classes):
@@ -222,7 +222,7 @@ def print_per_class_metrics(y_true, y_pred, y_prob, num_classes, label_map, spli
 
 def evaluate_classifier(clf, X, y, num_classes: int, label_map, split_name="Test"):
     """
-    返回整体指标 + per-class metrics（字典），方便后面算 mean ± std。
+    Return overall metrics plus per-class metrics (dict) for later aggregation.
     """
     y_pred = clf.predict(X)
     y_prob = None
@@ -253,23 +253,23 @@ def evaluate_classifier(clf, X, y, num_classes: int, label_map, split_name="Test
     else:
         print("AUC      : N/A")
 
-    # 分类报告
+    # Classification report
     inv_label_map = {v: k for k, v in label_map.items()}
     target_names = [str(inv_label_map[i]) for i in range(num_classes)]
     print("\nClassification Report:")
     print(classification_report(y, y_pred, target_names=target_names))
 
-    # per-class metrics（打印）
+    # per-class metrics (print)
     print_per_class_metrics(y, y_pred, y_prob, num_classes, label_map, split_name)
 
-    # per-class metrics（返回，用来求 mean ± std）
+    # per-class metrics (return for mean ± std)
     per_class = compute_per_class_metrics(y, y_pred, y_prob, num_classes)
 
     return acc, macro_f1, auc, per_class
 
 
 # ======================
-# 主函数：多次随机划分 + RF / SVM
+# Main: multiple random splits + RF / SVM
 # ======================
 
 def main():
@@ -279,28 +279,28 @@ def main():
         "--csv_path",
         type=str,
         default="/Users/chrissychen/Documents/PhD_2nd_year/MOF_MATRIX/BioMOF_pipeline/oral_data_cleaned.csv",
-        help="CSV 路径（包含 SMILES 和 Category）",
+        help="CSV path (contains SMILES and Category columns)",
     )
     parser.add_argument("--smiles_column", type=str, default="Canonical SMILES")
     parser.add_argument("--label_column", type=str, default="Category")
-    parser.add_argument("--radius", type=int, default=2, help="Morgan 指纹半径")
-    parser.add_argument("--n_bits", type=int, default=2048, help="Morgan 指纹长度")
+    parser.add_argument("--radius", type=int, default=2, help="Morgan fingerprint radius")
+    parser.add_argument("--n_bits", type=int, default=2048, help="Morgan fingerprint length")
     parser.add_argument("--test_ratio", type=float, default=0.1)
     parser.add_argument("--val_ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--num_runs", type=int, default=5, help="不同随机种子的运行次数")
+    parser.add_argument("--num_runs", type=int, default=5, help="Number of runs with different random seeds")
 
-    # RF 超参数
+    # RF hyperparameters
     parser.add_argument("--rf_n_estimators", type=int, default=500)
     parser.add_argument("--rf_max_depth", type=int, default=None)
 
-    # SVM 超参数
+    # SVM hyperparameters
     parser.add_argument("--svm_C", type=float, default=1.0)
     parser.add_argument("--svm_kernel", type=str, default="rbf")  # 'linear', 'rbf', 'poly', ...
 
     args = parser.parse_args()
 
-    # 1. 构建指纹数据集
+    # 1. Build fingerprint dataset
     X, y, label_map = create_fingerprint_dataset(
         args.csv_path,
         smiles_column=args.smiles_column,
@@ -311,7 +311,7 @@ def main():
     num_classes = len(set(y))
 
     # =======================
-    #  Random Forest: 多次运行
+    #  Random Forest: multiple runs
     # =======================
     rf_accs, rf_f1s, rf_aucs = [], [], []
     rf_per_class_stats = {
@@ -343,7 +343,7 @@ def main():
         )
         rf.fit(X_train, y_train)
 
-        # 这里主要关心 Test 的指标（与 GNN evaluation 一致）
+        # Focus on Test metrics (aligned with GNN evaluation)
         acc, macro_f1, auc, per_class = evaluate_classifier(
             rf, X_test, y_test, num_classes, label_map, split_name="RF Test"
         )
@@ -352,7 +352,7 @@ def main():
         rf_f1s.append(macro_f1)
         rf_aucs.append(auc if auc is not None else np.nan)
 
-        # per-class 汇总
+        # Aggregate per-class stats
         for c in range(num_classes):
             rf_per_class_stats[c]["acc"].append(per_class[c]["acc"])
             rf_per_class_stats[c]["sens"].append(per_class[c]["sens"])
@@ -399,7 +399,7 @@ def main():
         )
 
     # =======================
-    #  SVM: 多次运行
+    #  SVM: multiple runs
     # =======================
     svm_accs, svm_f1s, svm_aucs = [], [], []
     svm_per_class_stats = {
@@ -427,7 +427,7 @@ def main():
             C=args.svm_C,
             kernel=args.svm_kernel,
             gamma="scale",
-            probability=True,   # 为了 AUC 和 per-class prob
+            probability=True,   # For AUC and per-class probabilities
             random_state=seed_i,
         )
         svm.fit(X_train, y_train)
@@ -484,7 +484,7 @@ def main():
             f"{fmt(spec_arr):>15}  {fmt(f1_arr):>15}  {fmt(auc_arr):>15}"
         )
 
-    print("\n✅ 指纹 RF + SVM baseline 多次运行实验结束。")
+    print("\n✅ Fingerprint RF + SVM baseline multi-run experiment completed.")
 
 
 if __name__ == "__main__":
